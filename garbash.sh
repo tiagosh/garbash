@@ -2,7 +2,7 @@
 declare -g result
 
 parse_json() {
-    jq -r "$1"
+    result=$(jq -r "$1")
 }
 
 get_var_from_scope() {
@@ -16,22 +16,27 @@ set_var_in_scope() {
 }
 
 eval_function() {
-    evaluate "$(parse_json .value <<< $1)" $2
+    parse_json .value <<< $1
+    evaluate "$result" $2
 }
 
 eval_print() {
-    evaluate "$(parse_json .value <<< $1)" $2
+    parse_json .value <<< $1
+    evaluate "$result" $2
     echo $result
 }
 
 eval_call() {
     local term=$1; local scope_id=$2
-    local name=$(parse_json .callee.text <<< $term)
+    parse_json .callee.text <<< $term
+    local name=$result
     get_var_from_scope $name $scope_id
-    local params=$(parse_json '.parameters[].text' <<< $result)
+    parse_json '.parameters[].text' <<< $result
+    local params=$result
     local counter=0
     for param in $params; do
-        local tmp_arg=$(parse_json ".arguments[$counter]" <<< $term)
+        parse_json ".arguments[$counter]" <<< $term
+        local tmp_arg=$result
         evaluate "$tmp_arg" $scope_id
         set_var_in_scope "$param" "$result" $scope_id
         let counter=counter+1
@@ -41,20 +46,20 @@ eval_call() {
 }
 
 eval_var() {
-    local name=$(parse_json .text <<< $1)
+    parse_json .text <<< $1 # name
     local scope_id=$2
-    get_var_from_scope $name $scope_id
+    get_var_from_scope $result $scope_id
 }
 
 eval_int_string() {
-    result=$(parse_json .value <<< $1)
+    parse_json .value <<< $1
 }
 
 eval_binary() {
     local term="$1"; local scope_id=$2
-    local tmp_lhs=$(parse_json .lhs <<< $term)
-    local tmp_rhs=$(parse_json .rhs <<< $term)
-    local op=$(parse_json .op <<< $term)
+    parse_json .lhs <<< $term; local tmp_lhs=$result
+    parse_json .rhs <<< $term; local tmp_rhs=$result
+    parse_json .op <<< $term; local op=$result
 
     evaluate "$tmp_lhs" $2
     local lhs=$result
@@ -62,22 +67,22 @@ eval_binary() {
     local rhs=$result
     case $op in
     Add)
-        result=$(expr $lhs + $rhs)
+        result=$(($lhs + $rhs))
     ;;
     Sub)
-        result=$(expr $lhs - $rhs)
+        result=$(($lhs - $rhs))
     ;;
     Lt)
-        result=$(expr $lhs '<' $rhs)
+        result=$(($lhs < $rhs))
     ;;
     Mul)
-        result=$(expr $lhs '*' $rhs)
+        result=$(($lhs * $rhs))
     ;;
     Div)
-        result=$(expr $lhs '/' $rhs)
+        result=$(($lhs / $rhs))
     ;;
     Eq)
-        result=$(expr "$lhs" = "$rhs")
+        result=$(($lhs == $rhs))
     ;;
     Or)
         if [ "$lhs" != "0" -o "$rhs" != "0" ]; then
@@ -95,39 +100,40 @@ eval_binary() {
 
 eval_if() {
     local term=$1; local scope_id=$2
-    local condition=$(parse_json .condition <<< $term)
+    parse_json .condition <<< $term; local condition=$result
     evaluate "$condition" $scope_id
     if [ $result -eq 1 ]; then
-        local then=$(parse_json .then <<< $term)
+        parse_json .then <<< $term; local then=$result
         evaluate "$then" $scope_id
     else
-        local otherwise=$(parse_json .otherwise <<< $term)
+        parse_json .otherwise <<< $term; local otherwise=$result
         evaluate "$otherwise" $scope_id
     fi
 }
 
 eval_let() {
     local term=$1; local scope_id=$2
-    local name=$(parse_json .name.text <<< $term)
-    local value=$(parse_json .value.kind <<< $term)
+    parse_json .name.text <<< $term; local name=$result
+    parse_json .value.kind <<< $term; local value=$result
     if [ "$value" = "Function" ]; then
-        set_var_in_scope $name "$(parse_json .value <<< $term)" $scope_id
+        parse_json .value <<< $term
+        set_var_in_scope $name "$result" $scope_id
     else
-        local tmp=$(parse_json .value <<< $term)
-        evaluate "$tmp" $scope_id
+        parse_json .value <<< $term
+        evaluate "$result" $scope_id
         set_var_in_scope $name "$result" $scope_id
     fi
 }
 
 evaluate() {
     local term=$1; local scope_id=$2
-    local kind=$(parse_json .kind <<< $term)
+    parse_json .kind <<< $term; local kind=$result
     case $kind in
     Let)
         eval_let "$term" $scope_id
-        local next=$(parse_json .next <<< $term)
+        parse_json .next <<< $term; local next=$result
         if [ "$next" != "null" ]; then
-            local next_term=$(parse_json .next <<< $term)
+            parse_json .next <<< $term; local next_term=$result
             evaluate "$next_term" $scope_id
         fi
     ;;
