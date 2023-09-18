@@ -1,53 +1,64 @@
 #!/bin/bash -e
 declare -g result
 
+parse_json() {
+    jq -r "$1"
+}
+
+get_var_from_scope() {
+    local name=$1; local scope_id=$2
+    eval "result=\${scope_$scope_id['$name']}"
+}
+
+set_var_in_scope() {
+    local name=$1; local value=$2; local scope_id=$3
+    eval "scope_$scope_id['$name']=\$value"
+}
+
 eval_function() {
-    local tmp=$(mktemp /tmp/garbashXXXXXXX)
-    jq .value < $1 > $tmp
-    evaluate $tmp $2
+    evaluate "$(parse_json .value <<< $1)" $2
 }
 
 eval_print() {
-    local tmp=$(mktemp /tmp/garbashXXXXXXX)
-    jq .value < $1 > $tmp
-    evaluate $tmp $2
+    evaluate "$(parse_json .value <<< $1)" $2
     echo $result
 }
 
 eval_call() {
-    local tmp=$(mktemp /tmp/garbashXXXXXXX)
-    local name=$(jq -r .callee.text < $1)
-    local params=$(jq -r '.parameters[].text' /tmp/garbash_$name)
+    local term=$1; local scope_id=$2
+    local name=$(parse_json .callee.text <<< $term)
+    get_var_from_scope $name $scope_id
+    local params=$(parse_json '.parameters[].text' <<< $result)
     local counter=0
     for param in $params; do
-        jq .arguments[$counter] < $1 > $tmp
-        evaluate $tmp $2
-        echo "$param=$result" >> $2
+        local tmp_arg=$(parse_json ".arguments[$counter]" <<< $term)
+        evaluate "$tmp_arg" $scope_id
+        set_var_in_scope "$param" "$result" $scope_id
         let counter=counter+1
     done
-    evaluate /tmp/garbash_$name $2
+    get_var_from_scope $name $scope_id
+    evaluate "$result" $scope_id
 }
 
 eval_var() {
-    local name=$(jq -r .text < $1)
-    source $2
-    eval "result=\$$name"
+    local name=$(parse_json .text <<< $1)
+    local scope_id=$2
+    get_var_from_scope $name $scope_id
 }
 
 eval_int_string() {
-    result=$(jq -r .value < $1)
+    result=$(parse_json .value <<< $1)
 }
 
 eval_binary() {
-    local tmp_lhs=$(mktemp /tmp/garbashXXXXXXX)
-    local tmp_rhs=$(mktemp /tmp/garbashXXXXXXX)
-    jq .lhs < $1 > $tmp_lhs
-    jq .rhs < $1 > $tmp_rhs
-    local op=$(jq -r .op < $1)
+    local term="$1"; local scope_id=$2
+    local tmp_lhs=$(parse_json .lhs <<< $term)
+    local tmp_rhs=$(parse_json .rhs <<< $term)
+    local op=$(parse_json .op <<< $term)
 
-    evaluate $tmp_lhs $2
+    evaluate "$tmp_lhs" $2
     local lhs=$result
-    evaluate $tmp_rhs $2
+    evaluate "$tmp_rhs" $2
     local rhs=$result
     case $op in
     Add)
@@ -83,70 +94,55 @@ eval_binary() {
 }
 
 eval_if() {
-    local tmp_condition=$(mktemp /tmp/garbashXXXXXXX)
-    jq .condition < $1 > $tmp_condition
-    evaluate $tmp_condition $2
+    local term=$1; local scope_id=$2
+    local condition=$(parse_json .condition <<< $term)
+    evaluate "$condition" $scope_id
     if [ $result -eq 1 ]; then
-        local tmp_then=$(mktemp /tmp/garbashXXXXXXX)
-        jq .then < $1 > $tmp_then
-        evaluate $tmp_then $2
+        local then=$(parse_json .then <<< $term)
+        evaluate "$then" $scope_id
     else
-        local tmp_otherwise=$(mktemp /tmp/garbashXXXXXXX)
-        jq .otherwise < $1 > $tmp_otherwise
-        evaluate $tmp_otherwise $2
+        local otherwise=$(parse_json .otherwise <<< $term)
+        evaluate "$otherwise" $scope_id
     fi
 }
 
 eval_let() {
-    local name=$(jq -r .name.text < $1)
-    local value=$(jq -r .value.kind < $1)
+    local term=$1; local scope_id=$2
+    local name=$(parse_json .name.text <<< $term)
+    local value=$(parse_json .value.kind <<< $term)
     if [ "$value" = "Function" ]; then
-        jq .value < $1 > /tmp/garbash_$name
+        set_var_in_scope $name "$(parse_json .value <<< $term)" $scope_id
     else
-        local tmp=$(mktemp /tmp/garbashXXXXXXX)
-        jq .value < $1 > $tmp
-        evaluate $tmp $2
-        echo "$name=$result" >> $2
+        local tmp=$(parse_json .value <<< $term)
+        evaluate "$tmp" $scope_id
+        set_var_in_scope $name "$result" $scope_id
     fi
 }
 
 evaluate() {
-    read kind <<< "$(jq -r .kind < $1)"
-    local tmp_env=$2
+    local term=$1; local scope_id=$2
+    local kind=$(parse_json .kind <<< $term)
     case $kind in
     Let)
-        eval_let $1 $tmp_env
-        local next=$(jq -r .next < $1)
+        eval_let "$term" $scope_id
+        local next=$(parse_json .next <<< $term)
         if [ "$next" != "null" ]; then
-            local tmp_next=$(mktemp /tmp/garbashXXXXXXX)
-            jq .next < $1 > $tmp_next
-            evaluate $tmp_next $tmp_env
+            local next_term=$(parse_json .next <<< $term)
+            evaluate "$next_term" $scope_id
         fi
     ;;
-    If)
-        eval_if $1 $tmp_env
-    ;;
-    Binary)
-        eval_binary $1 $tmp_env
-    ;;
-    Int|Str)
-        eval_int_string $1 $tmp_env
-    ;;
-    Var)
-        eval_var $1 $tmp_env
-    ;;
+    If) eval_if "$term" $scope_id ;;
+    Binary) eval_binary "$term" $scope_id ;;
+    Int|Str) eval_int_string "$term" $scope_id;;
+    Var) eval_var "$term" $scope_id ;;
     Call)
-        let counter=counter+1
-        local tmp_new_env=$(mktemp /tmp/garbash_call_${counter}_XXXXXXX)
-        cp $tmp_env $tmp_new_env
-        eval_call $1 $tmp_new_env
+        let scope_counter=scope_counter+1
+        local tmp=$(eval "declare -p scope_$scope_id")
+        eval "${tmp/scope_$scope_id=/scope_$scope_counter=}"
+        eval_call "$term" $scope_counter
     ;;
-    Function)
-        eval_function $1 $tmp_env
-    ;;
-    Print)
-        eval_print $1 $tmp_env
-    ;;
+    Function) eval_function "$term" $scope_id;;
+    Print) eval_print "$term" $scope_id;;
     *) # Not Implemented: First(First),Second(Second),Bool(Bool),Tuple(Tuple)
         echo undefined kind $kind
 	    exit 1
@@ -154,7 +150,6 @@ evaluate() {
     esac
 }
 
-> /tmp/env
-jq .expression  < $1 > /tmp/start
-evaluate /tmp/start /tmp/env
-rm /tmp/garbash*
+scope_counter=0; declare -gA scope_0
+json=$(jq -r .expression < $1)
+evaluate "$json" 0
