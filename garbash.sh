@@ -40,30 +40,27 @@ eval_function() {
 }
 
 eval_print() {
+    local text
     parse_json .value <<< $1
     evaluate "$result" $2
     case $result_kind in
-    Bool)
-        [ $result -eq 0 ] && echo false || echo true
-        return
-        ;;
-    Tuple)
-        echo "(${result_tuple[1]},${result_tuple[3]})"
-        return
-        ;;
-    *) echo $result ;;
+    Bool) [ $result -eq 0 ] &&  text=false || text=true ;;
+    Tuple) text="(${result_tuple[1]},${result_tuple[3]})" ;;
+    Function) echo "<#closure>" ;;
+    *) text=$result ;;
     esac
+    echo $text
 }
 
 eval_call() {
-    local term=$1; local scope_id=$2
-    parse_json .callee.text <<< $term
-    local name=$result
-    get_var_from_scope $name $scope_id
-    local func_body=$result
+    local term=$1; local scope_id=$2; local counter=0
+    parse_json .callee.text <<< $term; local name=$result
+    get_var_from_scope $name $scope_id; local func_body=$result
     parse_json '.parameters[].text' <<< $result
-    local params=$result
-    local counter=0
+    local params=$result; local num_params=$(echo "$result" | wc -w)
+    parse_json ".arguments | length" <<< $term
+    local num_args=$result
+    [ $num_args -ne $num_params ] && echo "invalid number of args: $name" && exit 1
     for param in $params; do
         parse_json ".arguments[$counter]" <<< $term
         local tmp_arg=$result
@@ -86,12 +83,7 @@ eval_int_string() {
 
 eval_bool() {
     parse_json .value <<< $1
-    if [ $result = "true" ]; then
-        result=1
-    else
-        result=0
-    fi
-    result_kind=Bool
+    [ $result = "true" ] && result=1 || result=0; result_kind=Bool
 }
 
 eval_tuple() {
@@ -132,54 +124,19 @@ eval_binary() {
             *) echo "Add BinaryOp not support for $lhs_kind + $rhs_kind"; exit 1 ;;
         esac
     ;;
-    Sub)
-        result=$(($lhs - $rhs))
-    ;;
-    Mul)
-        result=$(($lhs * $rhs))
-    ;;
-    Div)
-        result=$(($lhs / $rhs))
-    ;;
-    Rem)
-        result=$(($lhs % $rhs))
-    ;;
-    Eq)
-        result=$(($lhs == $rhs))
-        result_kind=Bool
-    ;;
-    Lt)
-        result=$(($lhs < $rhs))
-        result_kind=Bool
-    ;;
-    Gte)
-        result=$(($lhs >= $rhs))
-        result_kind=Bool
-    ;;
-    Gt)
-        result=$(($lhs > $rhs))
-        result_kind=Bool
-    ;;
-    Lte)
-        result=$(($lhs <= $rhs))
-        result_kind=Bool
-    ;;
-    Neq)
-        [ "$lhs" != "$rhs" ] && result=1 || result=0
-        result_kind=Bool
-    ;;
-    And)
-        [ "$lhs" != "0" -a "$rhs" != "0" ] && result=1 || result=0
-        result_kind=Bool
-    ;;
-    Or)
-        [ "$lhs" != "0" -o "$rhs" != "0" ] && result=1 || result=0
-        result_kind=Bool
-    ;;
-    *) # Not implemented: Rem
-        echo $op not implemented
-        exit 1
-    ;;
+    Sub) result=$(($lhs - $rhs)) ;;
+    Mul) result=$(($lhs * $rhs)) ;;
+    Div) result=$(($lhs / $rhs)) ;;
+    Rem) result=$(($lhs % $rhs)) ;;
+    Eq) result=$(($lhs == $rhs)); result_kind=Bool ;;
+    Lt) result=$(($lhs < $rhs)); result_kind=Bool ;;
+    Gte) result=$(($lhs >= $rhs)); result_kind=Bool ;;
+    Gt) result=$(($lhs > $rhs)); result_kind=Bool ;;
+    Lte) result=$(($lhs <= $rhs)); result_kind=Bool ;;
+    Neq) [ "$lhs" != "$rhs" ] && result=1 || result=0; result_kind=Bool ;;
+    And) [ "$lhs" != "0" -a "$rhs" != "0" ] && result=1 || result=0; result_kind=Bool ;;
+    Or) [ "$lhs" != "0" -o "$rhs" != "0" ] && result=1 || result=0; result_kind=Bool ;;
+    *) echo $op not implemented; exit 1 ;;
     esac
 }
 
@@ -230,6 +187,16 @@ evaluate() {
     local term=$1; local scope_id=$2
     parse_json .kind <<< $term; local kind=$result
     case $kind in
+    If) eval_if "$term" $scope_id ;;
+    Binary) eval_binary "$term" $scope_id ;;
+    Int|Str) eval_int_string "$term" $scope_id; result_kind=$kind ;;
+    Tuple) eval_tuple "$term" $scope_id ;;
+    Var) eval_var "$term" $scope_id ;;
+    Function) eval_function "$term" $scope_id;;
+    Print) eval_print "$term" $scope_id;;
+    First) eval_first "$term" $scope_id;;
+    Second) eval_second "$term" $scope_id;;
+    Bool) eval_bool "$term" $scope_id;;
     Let)
         eval_let "$term" $scope_id
         parse_json .next <<< $term; local next=$result
@@ -238,11 +205,6 @@ evaluate() {
             evaluate "$next_term" $scope_id
         fi
     ;;
-    If) eval_if "$term" $scope_id ;;
-    Binary) eval_binary "$term" $scope_id ;;
-    Int|Str) eval_int_string "$term" $scope_id; result_kind=$kind ;;
-    Tuple) eval_tuple "$term" $scope_id ;;
-    Var) eval_var "$term" $scope_id ;;
     Call)
         let scope_counter=scope_counter+1
         local tmp=$(eval "declare -p scope_value_$scope_id")
@@ -251,18 +213,10 @@ evaluate() {
         eval "${tmp/scope_kind_$scope_id=/scope_kind_$scope_counter=}"
         eval_call "$term" $scope_counter
     ;;
-    Function) eval_function "$term" $scope_id;;
-    Print) eval_print "$term" $scope_id;;
-    First) eval_first "$term" $scope_id;;
-    Second) eval_second "$term" $scope_id;;
-    Bool) eval_bool "$term" $scope_id;;
-    *)
-        echo undefined kind $kind
-	    exit 1
-    ;;
+    *) echo undefined kind $kind; exit 1 ;;
     esac
 }
-
+if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
 scope_counter=0; declare -gA scope_value_0; declare -gA scope_kind_0
 json=$(jq -r .expression < $1)
 evaluate "$json" 0
