@@ -1,5 +1,8 @@
 #!/bin/bash -e
 declare -g result; declare -g result_kind; declare -ag result_tuple;
+declare -gA closure_scopes; declare -g scope_counter=0
+declare -gA scope_value_0; declare -gA scope_kind_0
+if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
 
 parse_json() {
     result=$(jq -r "$1")
@@ -58,17 +61,24 @@ eval_call() {
     get_var_from_scope $name $scope_id; local func_body=$result
     parse_json '.parameters[].text' <<< $result
     local params=$result; local num_params=$(echo "$result" | wc -w)
-    parse_json ".arguments | length" <<< $term
-    local num_args=$result
+    parse_json ".arguments | length" <<< $term; local num_args=$result
     [ $num_args -ne $num_params ] && echo "invalid number of args: $name" && exit 1
+    # recover original scope of this closure
+    local func_id=$(cksum <<< $func_body | tr -d '[:space:]')
+    local closure_scope_id=${closure_scopes["$func_id"]}
+    let scope_counter=scope_counter+1; local new_scope_id=$scope_counter
+    local tmp=$(eval "declare -p scope_value_$closure_scope_id")
+    eval "${tmp/scope_value_$closure_scope_id=/-g scope_value_$new_scope_id=}"
+    tmp=$(eval "declare -p scope_kind_$closure_scope_id")
+    eval "${tmp/scope_kind_$closure_scope_id=/-g scope_kind_$new_scope_id=}"
     for param in $params; do
         parse_json ".arguments[$counter]" <<< $term
         local tmp_arg=$result
         evaluate "$tmp_arg" $scope_id
-        set_var_in_scope "$param" "$result" $result_kind $scope_id
+        set_var_in_scope "$param" "$result" $result_kind $new_scope_id
         let counter=counter+1
     done
-    evaluate "$func_body" $scope_id
+    evaluate "$func_body" $new_scope_id
 }
 
 eval_var() {
@@ -165,6 +175,9 @@ eval_let() {
             set_tuple_in_scope $name "${result_tuple[0]}" "${result_tuple[1]}" "${result_tuple[2]}" "${result_tuple[3]}" $scope_id
             return
         fi
+    else
+        local func_id=$(cksum <<< $result| tr -d '[:space:]')
+        closure_scopes["$func_id"]=$scope_id
     fi
     set_var_in_scope $name "$result" $kind $scope_id
 }
@@ -188,6 +201,7 @@ evaluate() {
     parse_json .kind <<< $term; local kind=$result
     case $kind in
     If) eval_if "$term" $scope_id ;;
+    Call) eval_call "$term" $scope_id ;;
     Binary) eval_binary "$term" $scope_id ;;
     Int|Str) eval_int_string "$term" $scope_id; result_kind=$kind ;;
     Tuple) eval_tuple "$term" $scope_id ;;
@@ -205,18 +219,9 @@ evaluate() {
             evaluate "$next_term" $scope_id
         fi
     ;;
-    Call)
-        let scope_counter=scope_counter+1
-        local tmp=$(eval "declare -p scope_value_$scope_id")
-        eval "${tmp/scope_value_$scope_id=/scope_value_$scope_counter=}"
-        tmp=$(eval "declare -p scope_kind_$scope_id")
-        eval "${tmp/scope_kind_$scope_id=/scope_kind_$scope_counter=}"
-        eval_call "$term" $scope_counter
-    ;;
     *) echo undefined kind $kind; exit 1 ;;
     esac
 }
-if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
-scope_counter=0; declare -gA scope_value_0; declare -gA scope_kind_0
+
 json=$(jq -r .expression < $1)
 evaluate "$json" 0
