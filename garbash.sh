@@ -48,7 +48,7 @@ eval_print() {
     evaluate "$result" $2
     case $result_kind in
     Bool) [ $result -eq 0 ] &&  text=false || text=true ;;
-    Tuple) text="(${result_tuple[1]},${result_tuple[3]})" ;;
+    Tuple) text="(${result_tuple[1]}, ${result_tuple[3]})" ;;
     Function) echo "<#closure>" ;;
     *) text=$result ;;
     esac
