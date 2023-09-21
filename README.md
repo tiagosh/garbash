@@ -1,9 +1,9 @@
 ![Garbash](image.png)
 
 
-  ## Garbash - AST interpreter
+  ## Garbash - AST - Tree-Walk Interpreter
 
-  An AST interpreter written in bash. It's optimized for the lowest performance, and to provide the highest joy to the developer.
+  An AST interpreter written in bash. It's optimized for the lowest performance, and to provide the highest joy to the developer. [Official contest repository](https://github.com/aripiprazole/rinha-de-compiler) - [Specs](https://github.com/aripiprazole/rinha-de-compiler/blob/main/SPECS.md)
 
   ### Install deps
   - brew install jq (or apt-get install jq)
