@@ -222,6 +222,6 @@ evaluate() {
     *) echo undefined kind $kind; exit 1 ;;
     esac
 }
-
-json=$(jq -r .expression < $1)
+AST=${1:-/var/rinha/source.rinha.json}
+json=$(jq -r .expression < $AST)
 evaluate "$json" 0
