@@ -239,7 +239,7 @@ evaluate() {
     Bool) eval_bool "$term" $start ;;
     Let)
         eval_let "$term" $scope_id $start
-        [ "$next" != "null" ] && evaluate "$next" $scope_id
+        [ "$next" != "null" ] && evaluate "$next" $scope_id || runtime_error "No next term on Let"
     ;;
     *) runtime_error "undefined kind $kind" ;;
     esac
