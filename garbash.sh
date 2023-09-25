@@ -2,6 +2,7 @@
 declare -g result; declare -g result_kind; declare -ag result_tuple;
 declare -gA closure_scopes; declare -g scope_counter=0
 declare -gA scope_value_0; declare -gA scope_kind_0; declare -gA value_cache
+declare -gA json_cache; declare -gA result_cache; declare -gA result_kind_cache
 if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
 
 runtime_error() {
@@ -13,7 +14,12 @@ assert_kind() {
 }
 
 parse_json() {
-    result=$(jq -c -r "$1")
+    local path=$1; local json
+    read -r json; local json_id=$(cksum <<< "$json$path")
+    result=${json_cache["$json_id"]}
+    [ -n "$result" ] && return
+    result=$(jq -c -r "$path" <<< $json)
+    json_cache["$json_id"]=$result
 }
 
 try_get_from_cache() {
@@ -93,14 +99,19 @@ eval_call() {
     eval "${tmp/scope_value_$closure_scope_id=/-g scope_value_$new_scope_id=}"
     tmp=$(eval "declare -p scope_kind_$closure_scope_id")
     eval "${tmp/scope_kind_$closure_scope_id=/-g scope_kind_$new_scope_id=}"
+    local arguments_cache=""
     for param in $params; do
         parse_json ".arguments[$counter]" <<< $term
         local tmp_arg=$result
         evaluate "$tmp_arg" $scope_id
+        arguments_cache=$arguments_cache$result
         set_var_in_scope "$param" "$result" $result_kind $new_scope_id
         let counter=counter+1
     done
+    result=${result_cache["$func_id$arguments_cache"]}; result_kind=${result_kind_cache["$func_id$arguments_cache"]}
+    [ -n "$result" ] && return
     evaluate "$func_body" $new_scope_id
+    result_cache["$func_id$arguments_cache"]=$result; result_kind_cache["$func_id$arguments_cache"]=$result_kind
 }
 
 eval_var() {
