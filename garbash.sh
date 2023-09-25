@@ -67,13 +67,19 @@ eval_print() {
     Function) text="<#closure>" ;;
     *) text=$result ;;
     esac
-    echo $text
+    echo "$text"
 }
 
 eval_call() {
-    local term=$1; local scope_id=$2; local counter=0; local name; local num_args
-    parse_json ".callee.text,(.arguments | length)" <<< $term
-    { read name; read num_args; } <<< $result
+    local term=$1; local scope_id=$2; local counter=0; local name; local num_args; local kind; local body
+    parse_json ".callee.text,(.arguments | length),.callee.kind,.callee" <<< $term
+    { read name; read num_args; read kind; read body; } <<< $result
+    if [ $kind = "Function" ]; then
+        name="anon"
+        local func_id=$(cksum <<< $body)
+        closure_scopes["$func_id"]=$scope_id
+        set_var_in_scope "$name" "$body" Function $scope_id
+    fi
     get_var_from_scope $name $scope_id; local func_body=$result
     parse_json '.parameters[].text' <<< $func_body
     set -- $result
@@ -154,7 +160,7 @@ eval_binary() {
         if [ $result_kind == "Int" ] || [ $result_kind == "Bool" ]; then
             [ $lhs -eq $rhs ]; result=$?
         elif [ $result_kind = "Str" ]; then
-            [ $lhs = $rhs ]; result=$?
+            [ "$lhs" = "$rhs" ]; result=$?
         else
             runtime_error "Can't compare $lhs_kind and $rhs_kind"
         fi
@@ -245,5 +251,5 @@ evaluate() {
     esac
 }
 AST=${1:-/var/rinha/source.rinha.json}
-json=$(jq -r .expression < $AST)
+json=$(jq -c -r .expression < $AST)
 evaluate "$json" 0
