@@ -1,7 +1,6 @@
 #!/bin/bash -e
 declare -g result; declare -g result_kind; declare -ag result_tuple;
 declare -gA closure_scopes; declare -g scope_counter=0
-declare -gA scope_value_0; declare -gA scope_kind_0; declare -gA value_cache
 declare -gA json_cache; declare -gA result_cache; declare -gA result_kind_cache
 if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
 
@@ -20,14 +19,6 @@ parse_json() {
     [ -n "$result" ] && return
     result=$(jq -c -r "$path" <<< $json)
     json_cache["$json_id"]=$result
-}
-
-try_get_from_cache() {
-    local start=$1; local prop=$2
-    result=${value_cache["$start"]}
-    [ -n "$result" ] && return
-    parse_json $prop
-    value_cache["$start"]=$result
 }
 
 get_var_from_scope() {
@@ -59,13 +50,13 @@ set_tuple_in_scope() {
 }
 
 eval_function() {
-    try_get_from_cache $3 .value <<< $1
+    parse_json .value <<< $1
     evaluate "$result" $2
 }
 
 eval_print() {
     local text
-    try_get_from_cache $3 .value <<< $1
+    parse_json .value <<< $1
     evaluate "$result" $2
     case $result_kind in
     Bool) [ $result -eq 0 ] && text=false || text=true ;;
@@ -99,7 +90,7 @@ eval_call() {
     eval "${tmp/scope_value_$closure_scope_id=/-g scope_value_$new_scope_id=}"
     tmp=$(eval "declare -p scope_kind_$closure_scope_id")
     eval "${tmp/scope_kind_$closure_scope_id=/-g scope_kind_$new_scope_id=}"
-    local arguments_cache=""
+    local arguments_cache
     for param in $params; do
         parse_json ".arguments[$counter]" <<< $term
         local tmp_arg=$result
@@ -115,17 +106,17 @@ eval_call() {
 }
 
 eval_var() {
-    try_get_from_cache $3 .text <<< $1
+    parse_json .text <<< $1
     local scope_id=$2
     get_var_from_scope $result $scope_id
 }
 
 eval_int_string() {
-    try_get_from_cache $2 .value <<< $1
+    parse_json .value <<< $1
 }
 
 eval_bool() {
-    try_get_from_cache $2 .value <<< $1
+    parse_json .value <<< $1
     [ ! $result = "true" ]; result=$?; result_kind=Bool
 }
 
@@ -209,7 +200,7 @@ eval_let() {
     local term=$1; local scope_id=$2; local name; local kind;
     parse_json .name.text,.value.kind <<< $term
     { read name; read kind; } <<< $result
-    try_get_from_cache $3 .value <<< $term
+    parse_json .value <<< $term
     if [ "$kind" != "Function" ]; then
         evaluate "$result" $scope_id
         kind=$result_kind
@@ -225,14 +216,14 @@ eval_let() {
 }
 
 eval_first() {
-    try_get_from_cache $3 .value <<< $1
+    parse_json .value <<< $1
     evaluate "$result" $2
     [ $result_kind != "Tuple" ] && runtime_error "called first() on a non Tuple"
     result=${result_tuple[1]}; result_kind=${result_tuple[0]}
 }
 
 eval_second() {
-    try_get_from_cache $3 .value <<< $1
+    parse_json .value <<< $1
     evaluate "$result" $2
     [ $result_kind != "Tuple" ] && runtime_error "called second() on a non Tuple"
     result=${result_tuple[3]}; result_kind=${result_tuple[2]}
@@ -263,4 +254,5 @@ evaluate() {
 }
 AST=${1:-/var/rinha/source.rinha.json}
 json=$(jq -c -r .expression < $AST)
+declare -gA scope_value_0; declare -gA scope_kind_0
 evaluate "$json" 0
