@@ -94,7 +94,7 @@ print_function() {
 print_tuple() {
     local scope_id=$1; local tuple_first=$2; local tuple_second=$3; local output="(";
     for entry in "$tuple_first" "$tuple_second"; do
-        evaluate "$entry" $2; local first=$result; local first_kind=$result_kind
+        evaluate "$entry" $scope_id; local first=$result; local first_kind=$result_kind
         if [ $first_kind = "Tuple" ]; then
             print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"; result=$print_output
         elif [ $first_kind = "Function" ]; then
