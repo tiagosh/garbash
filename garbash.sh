@@ -93,23 +93,16 @@ print_function() {
 
 print_tuple() {
     local scope_id=$1; local tuple_first=$2; local tuple_second=$3; local output="(";
-    evaluate "$tuple_first" $2; local first=$result; local first_kind=$result_kind
-    if [ $first_kind = "Tuple" ]; then
-        print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"
-        result=$print_output
-    elif [ $first_kind = "Function" ]; then
-        print_function; result=$output
-    fi
-    output="$output$result, "
-    evaluate "$tuple_second" $2; local second=$result; local second_kind=$result_kind
-    if [ $second_kind = "Tuple" ]; then
-        print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"
-        result=$print_output
-    elif [ $first_kind = "Function" ]; then
-        print_function; result=$output
-    fi
-    output="$output$result)"
-    print_output=$output
+    for entry in "$tuple_first" "$tuple_second"; do
+        evaluate "$entry" $2; local first=$result; local first_kind=$result_kind
+        if [ $first_kind = "Tuple" ]; then
+            print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"; result=$print_output
+        elif [ $first_kind = "Function" ]; then
+            print_function; result=$output
+        fi
+        output="$output$result, "
+    done
+    output=${output::-2}; output="$output)"; print_output=$output
 }
 
 eval_print() {
@@ -261,12 +254,7 @@ eval_let() {
     set_var_in_scope $name "$result" $result_kind $scope_id
 }
 
-eval_first() {
-    parse_json .value <<< $1
-    evaluate "$result" $2
-}
-
-eval_second() {
+eval_tuple_entry() {
     parse_json .value <<< $1
     evaluate "$result" $2
 }
@@ -284,8 +272,7 @@ evaluate() {
     Var) eval_var "$term" $scope_id ;;
     Function) eval_function "$term" $scope_id ;;
     Print) eval_print "$term" $scope_id ;;
-    First) eval_first "$term" $scope_id ;;
-    Second) eval_second "$term" $scope_id ;;
+    First|Second) eval_tuple_entry "$term" $scope_id ;;
     Bool) eval_bool "$term" ;;
     Let)
         eval_let "$term" $scope_id
