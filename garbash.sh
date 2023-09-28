@@ -82,7 +82,7 @@ set_tuple_in_scope() {
 
 eval_function() {
     local func=$1; local scope_id=$2; local func_id=$(cksum <<< $func)
-    closure_scopes["$func_id"]=$scope_id
+    #closure_scopes["$func_id"]=$scope_id
     set_var_in_scope "$func_id" "$func" Function $scope_id
     result=$func; result_kind=Function; result_func_id=$func_id
 }
