@@ -38,7 +38,7 @@ set_arguments_to_scope() {
     for param in $params; do
         parse_json ".arguments[$counter]" <<< $term
         local tmp_arg=$result
-        evaluate "$tmp_arg" $orig_scope_id
+        evaluate "$tmp_arg" $scope_id
         arguments_cache=$arguments_cache$result
         set_var_in_scope "$param" "$result" $result_kind $this_new_scope_id
         let counter=counter+1
