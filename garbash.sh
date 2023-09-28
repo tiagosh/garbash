@@ -1,7 +1,8 @@
 #!/bin/bash -e
 declare -g result; declare -g result_kind; declare -ag result_tuple;
-declare -gA closure_scopes; declare -g scope_counter=0
+declare -gA closure_scopes; declare -g scope_counter=0; declare -gA memoize_blacklist
 declare -gA json_cache; declare -gA result_cache; declare -gA result_kind_cache
+declare -gA scope_id_map;
 if ! type jq >/dev/null 2>&1; then echo jq not found; exit 1; fi
 
 runtime_error() {
@@ -10,6 +11,40 @@ runtime_error() {
 
 assert_kind() {
     [ $result_kind != "$1" ] && runtime_error "Invalid BinaryOp kinds"
+}
+
+new_scope() {
+    local original_scope=$1
+    let scope_counter=scope_counter+1; new_scope_id=$scope_counter
+    local tmp=$(eval "declare -p scope_value_$original_scope")
+    eval "${tmp/scope_value_$original_scope=/-g scope_value_$new_scope_id=}"
+    tmp=$(eval "declare -p scope_kind_$original_scope")
+    eval "${tmp/scope_kind_$original_scope=/-g scope_kind_$new_scope_id=}"
+}
+drop_scope() {
+    eval "unset scope_value_$1; unset scope_kind_$1"
+}
+
+set_arguments_to_scope() {
+    local orig_scope_id=$1; local num_args=$2; local term=$3; local callee=$4; local func_id=$(cksum <<< $callee)
+    [ -v "closure_scopes['$func_id']" ] && local scope_id=${closure_scopes["$func_id"]} || local scope_id=$orig_scope_id
+    new_scope $scope_id; local this_new_scope_id=$new_scope_id
+
+    parse_json '.parameters[].text' <<< $callee
+    set -- $result
+    local params=$result; local num_params=$#
+    [ $num_args -ne $num_params ] && runtime_error "invalid number of args"
+    local arguments_cache; local counter=0
+    for param in $params; do
+        parse_json ".arguments[$counter]" <<< $term
+        local tmp_arg=$result
+        evaluate "$tmp_arg" $orig_scope_id
+        arguments_cache=$arguments_cache$result
+        set_var_in_scope "$param" "$result" $result_kind $this_new_scope_id
+        let counter=counter+1
+    done
+    result_cache_key="$func_id$arguments_cache"; new_scope_id=$this_new_scope_id
+    result=${result_cache["$result_cache_key"]}; result_kind=${result_kind_cache["$result_cache_key"]}
 }
 
 parse_json() {
@@ -23,6 +58,7 @@ parse_json() {
 
 get_var_from_scope() {
     local name=$1; local scope_id=$2
+    [ ! -v "scope_value_$scope_id['$name']" ] && runtime_error "Variable $name not defined"
     eval "result=\${scope_value_$scope_id['$name']}"
     eval "result_kind=\${scope_kind_$scope_id['$name']}"
     eval "local type=\${scope_kind_$scope_id[$name]}"
@@ -50,12 +86,15 @@ set_tuple_in_scope() {
 }
 
 eval_function() {
-    parse_json .value <<< $1
-    evaluate "$result" $2
+    local func=$1; local scope_id=$2; local func_id=$(cksum <<< $func)
+    closure_scopes["$func_id"]=$scope_id
+    set_var_in_scope "$func_id" "$func" Function $scope_id
+    result=$func; result_kind=Function; result_func_id=$func_id
 }
 
 eval_print() {
     local text
+    memoize_blacklist[$scope_id]=1
     parse_json .value <<< $1
     evaluate "$result" $2
     case $result_kind in
@@ -68,41 +107,34 @@ eval_print() {
 }
 
 eval_call() {
-    local term=$1; local scope_id=$2; local counter=0; local name; local num_args; local kind; local body
-    parse_json ".callee.text,(.arguments | length),.callee.kind,.callee" <<< $term
-    { read name; read num_args; read kind; read body; } <<< $result
-    if [ $kind = "Function" ]; then
-        name="anon"
-        local func_id=$(cksum <<< $body)
-        closure_scopes["$func_id"]=$scope_id
-        set_var_in_scope "$name" "$body" Function $scope_id
-    fi
-    get_var_from_scope $name $scope_id; local func_body=$result
-    parse_json '.parameters[].text' <<< $func_body
-    set -- $result
-    local params=$result; local num_params=$#
-    [ $num_args -ne $num_params ] && runtime_error "invalid number of args: $name"
-    # recover original scope of this closure
-    local func_id=$(cksum <<< $func_body)
-    local closure_scope_id=${closure_scopes["$func_id"]}
-    let scope_counter=scope_counter+1; local new_scope_id=$scope_counter
-    local tmp=$(eval "declare -p scope_value_$closure_scope_id")
-    eval "${tmp/scope_value_$closure_scope_id=/-g scope_value_$new_scope_id=}"
-    tmp=$(eval "declare -p scope_kind_$closure_scope_id")
-    eval "${tmp/scope_kind_$closure_scope_id=/-g scope_kind_$new_scope_id=}"
-    local arguments_cache
-    for param in $params; do
-        parse_json ".arguments[$counter]" <<< $term
-        local tmp_arg=$result
-        evaluate "$tmp_arg" $scope_id
-        arguments_cache=$arguments_cache$result
-        set_var_in_scope "$param" "$result" $result_kind $new_scope_id
-        let counter=counter+1
-    done
-    result=${result_cache["$func_id$arguments_cache"]}; result_kind=${result_kind_cache["$func_id$arguments_cache"]}
-    [ -n "$result" ] && return
-    evaluate "$func_body" $new_scope_id
-    result_cache["$func_id$arguments_cache"]=$result; result_kind_cache["$func_id$arguments_cache"]=$result_kind
+    local term=$1; local scope_id=$2;
+    local var_name; local num_args; local callee; local callee_kind;
+    parse_json ".callee,.callee.kind,.callee.value,.callee.text,(.arguments | length)" <<< $term
+    { read callee; read callee_kind; read callee_body; read var_name; read num_args; } <<< $result
+    case $callee_kind in
+    Function)
+        set_arguments_to_scope $scope_id $num_args "$term" "$callee"; local this_new_scope_id=$new_scope_id
+        parse_json .value $new_scope_id <<< $callee; local callee_body=$result
+    ;;
+    Var)
+        [ "${scope_id_map[$scope_id]}" != "$var_name" ] && memoize_blacklist[$scope_id]=1
+        get_var_from_scope $var_name $scope_id; callee=$result;
+        set_arguments_to_scope $scope_id "$num_args" "$term" "$callee"; local this_new_scope_id=$new_scope_id
+        scope_id_map[$this_new_scope_id]=$var_name
+        local this_cache_key=$result_cache_key
+        [ -n "$result" ] && return
+        parse_json .value $new_scope_id <<< $callee; local callee_body=$result
+    ;;
+    Call)
+        evaluate "$callee" $scope_id; local callee_body=$result
+        set_arguments_to_scope $scope_id $num_args "$term" "$callee_body"; local this_new_scope_id=$new_scope_id
+        parse_json .value $new_scope_id <<< $callee_body; callee_body=$result
+    ;;
+    *) runtime_error "Call to invalid Term" ;;
+    esac
+    evaluate "$callee_body" $this_new_scope_id
+    [ "${memoize_blacklist[$this_new_scope_id]}" = "1" ] && return
+    [ -n "$this_cache_key" ] && result_cache["$this_cache_key"]=$result && result_kind_cache["$this_cache_key"]=$result_kind
 }
 
 eval_var() {
@@ -141,7 +173,7 @@ eval_binary() {
     evaluate "$tmp_rhs" $scope_id; local rhs=$result; local rhs_kind=$result_kind
     if [ $lhs_kind = $rhs_kind ]; then
         result_kind=$lhs_kind
-    elif [ $lhs_kind = "Str" -o $rhs_kind = "Int" ] || [ $lhs_kind = "Int" -o $rhs_kind = "Str" ]; then
+    elif [ $lhs_kind = "Str" -a $rhs_kind = "Int" ] || [ $lhs_kind = "Int" -a $rhs_kind = "Str" ]; then
         result_kind=Str
     else
         runtime_error "BinaryOp not support for $lhs_kind $op $rhs_kind"
@@ -197,22 +229,18 @@ eval_if() {
 }
 
 eval_let() {
-    local term=$1; local scope_id=$2; local name; local kind;
-    parse_json .name.text,.value.kind <<< $term
-    { read name; read kind; } <<< $result
+    local term=$1; local scope_id=$2; local name;
+    parse_json .name.text <<< $term
+    { read name; } <<< $result
     parse_json .value <<< $term
-    if [ "$kind" != "Function" ]; then
-        evaluate "$result" $scope_id
-        kind=$result_kind
-        if [ $result_kind = "Tuple" ]; then
-            set_tuple_in_scope $name "${result_tuple[0]}" "${result_tuple[1]}" "${result_tuple[2]}" "${result_tuple[3]}" $scope_id
-            return
-        fi
-    else
-        local func_id=$(cksum <<< $result)
-        closure_scopes["$func_id"]=$scope_id
+    evaluate "$result" $scope_id
+    [ -z "$result_kind" ] && return
+    if [ $result_kind = "Tuple" ]; then
+        set_tuple_in_scope $name "${result_tuple[0]}" "${result_tuple[1]}" "${result_tuple[2]}" "${result_tuple[3]}" $scope_id
+        return
     fi
-    set_var_in_scope $name "$result" $kind $scope_id
+    [ $name = "_" ] && return
+    set_var_in_scope $name "$result" $result_kind $scope_id
 }
 
 eval_first() {
@@ -230,23 +258,23 @@ eval_second() {
 }
 
 evaluate() {
-    local term=$1; local scope_id=$2; local kind; local start; local next
-    parse_json .kind,.location.start,.next <<< $term
-    { read kind; read start; read next; } <<< $result
+    local term=$1; local scope_id=$2; local kind; local next
+    parse_json .kind,.next <<< $term
+    { read kind; read next; } <<< $result
     case $kind in
     If) eval_if "$term" $scope_id ;;
     Call) eval_call "$term" $scope_id ;;
     Binary) eval_binary "$term" $scope_id ;;
-    Int|Str) eval_int_string "$term" $start; result_kind=$kind ;;
+    Int|Str) eval_int_string "$term"; result_kind=$kind ;;
     Tuple) eval_tuple "$term" $scope_id ;;
-    Var) eval_var "$term" $scope_id $start ;;
-    Function) eval_function "$term" $scope_id $start ;;
-    Print) eval_print "$term" $scope_id $start ;;
-    First) eval_first "$term" $scope_id $start ;;
-    Second) eval_second "$term" $scope_id $start ;;
-    Bool) eval_bool "$term" $start ;;
+    Var) eval_var "$term" $scope_id ;;
+    Function) eval_function "$term" $scope_id ;;
+    Print) eval_print "$term" $scope_id ;;
+    First) eval_first "$term" $scope_id ;;
+    Second) eval_second "$term" $scope_id ;;
+    Bool) eval_bool "$term" ;;
     Let)
-        eval_let "$term" $scope_id $start
+        eval_let "$term" $scope_id
         [ "$next" != "null" ] && evaluate "$next" $scope_id || runtime_error "No next term on Let"
     ;;
     *) runtime_error "undefined kind $kind" ;;
@@ -254,5 +282,5 @@ evaluate() {
 }
 AST=${1:-/var/rinha/source.rinha.json}
 json=$(jq -c -r .expression < $AST)
-declare -gA scope_value_0; declare -gA scope_kind_0
+declare -gA scope_value_0=(); declare -gA scope_kind_0=()
 evaluate "$json" 0
