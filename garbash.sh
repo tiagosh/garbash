@@ -58,15 +58,13 @@ parse_json() {
 
 get_var_from_scope() {
     local name=$1; local scope_id=$2
-    [ ! -v "scope_value_$scope_id['$name']" ] && runtime_error "Variable $name not defined"
+    [ ! -v "scope_value_$scope_id['$name']" -a ! -v "scope_value_$scope_id['$name-first']" ] && runtime_error "Variable $name not defined"
     eval "result=\${scope_value_$scope_id['$name']}"
     eval "result_kind=\${scope_kind_$scope_id['$name']}"
     eval "local type=\${scope_kind_$scope_id[$name]}"
     [ "$type" != "Tuple" ] && return
-    eval "result_tuple[0]=\${scope_kind_$scope_id['$name-first']}"
-    eval "result_tuple[1]=\${scope_value_$scope_id['$name-first']}"
-    eval "result_tuple[2]=\${scope_kind_$scope_id['$name-second']}"
-    eval "result_tuple[3]=\${scope_value_$scope_id['$name-second']}"
+    eval "result_tuple[0]=\${scope_value_$scope_id['$name-first']}"
+    eval "result_tuple[1]=\${scope_value_$scope_id['$name-second']}"
 }
 
 set_var_in_scope() {
@@ -76,13 +74,10 @@ set_var_in_scope() {
 }
 
 set_tuple_in_scope() {
-    local name=$1; local first_kind=$2; local first_value=$3;
-    local second_kind=$4; local second_value=$5; local scope_id=$6
+    local name=$1; local first_value=$2; local second_value=$3; local scope_id=$4
     eval "scope_kind_$scope_id['$name']=Tuple"
     eval "scope_value_$scope_id['$name-first']=\$first_value"
-    eval "scope_kind_$scope_id['$name-first']=\$first_kind"
     eval "scope_value_$scope_id['$name-second']=\$second_value"
-    eval "scope_kind_$scope_id['$name-second']=\$second_kind"
 }
 
 eval_function() {
@@ -92,6 +87,31 @@ eval_function() {
     result=$func; result_kind=Function; result_func_id=$func_id
 }
 
+print_function() {
+    print_output="<#closure>"
+}
+
+print_tuple() {
+    local scope_id=$1; local tuple_first=$2; local tuple_second=$3; local output="(";
+    evaluate "$tuple_first" $2; local first=$result; local first_kind=$result_kind
+    if [ $first_kind = "Tuple" ]; then
+        print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"
+        result=$print_output
+    elif [ $first_kind = "Function" ]; then
+        print_function; result=$output
+    fi
+    output="$output$result, "
+    evaluate "$tuple_second" $2; local second=$result; local second_kind=$result_kind
+    if [ $second_kind = "Tuple" ]; then
+        print_tuple $scope_id "${result_tuple[0]}" "${result_tuple[1]}"
+        result=$print_output
+    elif [ $first_kind = "Function" ]; then
+        print_function; result=$output
+    fi
+    output="$output$result)"
+    print_output=$output
+}
+
 eval_print() {
     local text
     memoize_blacklist[$scope_id]=1
@@ -99,8 +119,11 @@ eval_print() {
     evaluate "$result" $2
     case $result_kind in
     Bool) [ $result -eq 0 ] && text=false || text=true ;;
-    Tuple) text="(${result_tuple[1]}, ${result_tuple[3]})" ;;
-    Function) text="<#closure>" ;;
+    Tuple)
+        print_tuple $2 "${result_tuple[0]}" "${result_tuple[1]}"
+        text=$print_output
+    ;;
+    Function) print_function; text=$print_output ;;
     *) text=$result ;;
     esac
     echo "$text"
@@ -156,12 +179,7 @@ eval_tuple() {
     local scope_id=$2; local first_term; local second_term
     parse_json .first,.second <<< $1
     { read first_term; read second_term; } <<< $result
-    evaluate "$first_term" $scope_id
-    local first_value=$result; local first_kind=$result_kind
-    evaluate "$second_term" $scope_id
-    local second_value=$result; local second_kind=$result_kind
-    result_tuple[0]=$first_kind; result_tuple[1]=$first_value;
-    result_tuple[2]=$second_kind; result_tuple[3]=$second_value;
+    result_tuple[0]=$first_term; result_tuple[1]=$second_term;
     result_kind=Tuple
 }
 
@@ -236,7 +254,7 @@ eval_let() {
     evaluate "$result" $scope_id
     [ -z "$result_kind" ] && return
     if [ $result_kind = "Tuple" ]; then
-        set_tuple_in_scope $name "${result_tuple[0]}" "${result_tuple[1]}" "${result_tuple[2]}" "${result_tuple[3]}" $scope_id
+        set_tuple_in_scope $name "${result_tuple[0]}" "${result_tuple[1]}" $scope_id
         return
     fi
     [ $name = "_" ] && return
@@ -246,15 +264,11 @@ eval_let() {
 eval_first() {
     parse_json .value <<< $1
     evaluate "$result" $2
-    [ $result_kind != "Tuple" ] && runtime_error "called first() on a non Tuple"
-    result=${result_tuple[1]}; result_kind=${result_tuple[0]}
 }
 
 eval_second() {
     parse_json .value <<< $1
     evaluate "$result" $2
-    [ $result_kind != "Tuple" ] && runtime_error "called second() on a non Tuple"
-    result=${result_tuple[3]}; result_kind=${result_tuple[2]}
 }
 
 evaluate() {
