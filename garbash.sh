@@ -21,15 +21,15 @@ new_scope() {
     tmp=$(eval "declare -p scope_kind_$original_scope")
     eval "${tmp/scope_kind_$original_scope=/-g scope_kind_$new_scope_id=}"
 }
+
 drop_scope() {
     eval "unset scope_value_$1; unset scope_kind_$1"
 }
 
 set_arguments_to_scope() {
-    local orig_scope_id=$1; local num_args=$2; local term=$3; local callee=$4; local func_id=$(cksum <<< $callee)
-    [ -v "closure_scopes['$func_id']" ] && local scope_id=${closure_scopes["$func_id"]} || local scope_id=$orig_scope_id
+    local orig_scope_id=$1; local num_args=$2; local term=$3; local callee=$4; local recover_scope=$5; local func_id=$(cksum <<< $callee)
+    [ $recover_scope -eq 1 ] && [ -v "closure_scopes['$func_id']" ] && local scope_id=${closure_scopes["$func_id"]} || local scope_id=$orig_scope_id
     new_scope $scope_id; local this_new_scope_id=$new_scope_id
-
     parse_json '.parameters[].text' <<< $callee
     set -- $result
     local params=$result; local num_params=$#
@@ -82,7 +82,7 @@ set_tuple_in_scope() {
 
 eval_function() {
     local func=$1; local scope_id=$2; local func_id=$(cksum <<< $func)
-    #closure_scopes["$func_id"]=$scope_id
+    closure_scopes["$func_id"]=$scope_id
     set_var_in_scope "$func_id" "$func" Function $scope_id
     result=$func; result_kind=Function; result_func_id=$func_id
 }
@@ -124,33 +124,67 @@ eval_print() {
 
 eval_call() {
     local term=$1; local scope_id=$2;
-    local var_name; local num_args; local callee; local callee_kind;
-    parse_json ".callee,.callee.kind,.callee.value,.callee.text,(.arguments | length)" <<< $term
-    { read callee; read callee_kind; read callee_body; read var_name; read num_args; } <<< $result
+    local var_name; local num_args; local callee; local callee_kind; local callee_num_args
+    parse_json ".callee,.callee.kind,.callee.value,.callee.text,(.arguments | length),(.callee.arguments | length)" <<< $term
+    { read callee; read callee_kind; read callee_body; read var_name; read num_args; read callee_num_args; } <<< $result
     case $callee_kind in
     Function)
-        set_arguments_to_scope $scope_id $num_args "$term" "$callee"; local this_new_scope_id=$new_scope_id
-        parse_json .value $new_scope_id <<< $callee; local callee_body=$result
+        set_arguments_to_scope $scope_id $num_args "$term" "$callee" 1; local this_new_scope_id=$new_scope_id
+        parse_json .value <<< $callee; local callee_body=$result
+        evaluate "$callee_body" $this_new_scope_id
     ;;
     Var)
         [ "${scope_id_map[$scope_id]}" != "$var_name" ] && memoize_blacklist[$scope_id]=1
         get_var_from_scope $var_name $scope_id; callee=$result;
-        set_arguments_to_scope $scope_id "$num_args" "$term" "$callee"; local this_new_scope_id=$new_scope_id
+        set_arguments_to_scope $scope_id "$num_args" "$term" "$callee" 0; local this_new_scope_id=$new_scope_id
         scope_id_map[$this_new_scope_id]=$var_name
         local this_cache_key=$result_cache_key
         [ -n "$result" ] && return
-        parse_json .value $new_scope_id <<< $callee; local callee_body=$result
+        parse_json .value <<< $callee; local callee_body=$result
+        evaluate "$callee_body" $this_new_scope_id
+        [ "${memoize_blacklist[$this_new_scope_id]}" = "1" ] && return
+        [ -n "$this_cache_key" ] && result_cache["$this_cache_key"]=$result && result_kind_cache["$this_cache_key"]=$result_kind
+        return
     ;;
     Call)
         evaluate "$callee" $scope_id; local callee_body=$result
-        set_arguments_to_scope $scope_id $num_args "$term" "$callee_body"; local this_new_scope_id=$new_scope_id
-        parse_json .value $new_scope_id <<< $callee_body; callee_body=$result
+        set_arguments_to_scope $scope_id $num_args "$term" "$callee_body" 1; local this_new_scope_id=$new_scope_id
+        parse_json .value <<< $callee_body; local callee_body=$result
+        evaluate "$callee_body" $this_new_scope_id
     ;;
     *) runtime_error "Call to invalid Term" ;;
     esac
-    evaluate "$callee_body" $this_new_scope_id
-    [ "${memoize_blacklist[$this_new_scope_id]}" = "1" ] && return
-    [ -n "$this_cache_key" ] && result_cache["$this_cache_key"]=$result && result_kind_cache["$this_cache_key"]=$result_kind
+    if [ $result_kind == "Function" ]; then
+        local func_id=$(cksum <<< $result)
+        [ ! -v "closure_scopes['$func_id']" ] && runtime_error "No closure scope found"
+        parse_json .value <<< $result; local callee_body=$result
+        set_arguments_to_scope $scope_id $callee_num_args "$term" "$callee_body" 1; local this_new_scope_id=$new_scope_id
+        evaluate "$callee_body" $this_new_scope_id
+    # elif [ $result_kind == "Tuple" ]; then
+    # :
+    #     # resolve_tuple $scope_id
+    #     # echo
+    #     # echo $resolve_tuple_output
+    fi
+}
+
+resolve_tuple() {
+    local scope_id=$1; local tuple_first=$2; local tuple_second=$3;
+    local output='{"kind":"Tuple","first":'
+    evaluate "$tuple_first" $scope_id
+    case $result_kind in
+    Int|Bool) output="{\"kind\":\"$result_kind\",\"value\":$result:}" ;;
+    Str) "{\"kind\":\"$result_kind\",\"value\":\"$result\":}" ;;
+    Tuple) resolve_tuple; output="$output$result"
+    esac
+    evaluate "$tuple_second" $scope_id
+    output="$output,\"second\":"
+    case $result_kind in
+    Int|Bool) output="{\"kind\":\"$result_kind\",\"value\":$result:}" ;;
+    Str) "{\"kind\":\"$result_kind\",\"value\":\"$result\":}" ;;
+    Tuple) resolve_tuple; output="$output$result"
+    esac
+    output="}"; resolve_tuple_output=$output
 }
 
 eval_var() {
@@ -255,8 +289,9 @@ eval_let() {
 }
 
 eval_tuple_entry() {
-    parse_json .value <<< $1
-    evaluate "$result" $2
+    parse_json .value <<< $2
+    evaluate "$result" $3
+    evaluate "${result_tuple[$1]}" $3
 }
 
 evaluate() {
@@ -272,7 +307,8 @@ evaluate() {
     Var) eval_var "$term" $scope_id ;;
     Function) eval_function "$term" $scope_id ;;
     Print) eval_print "$term" $scope_id ;;
-    First|Second) eval_tuple_entry "$term" $scope_id ;;
+    First) eval_tuple_entry 0 "$term" $scope_id ;;
+    Second) eval_tuple_entry 1 "$term" $scope_id ;;
     Bool) eval_bool "$term" ;;
     Let)
         eval_let "$term" $scope_id
