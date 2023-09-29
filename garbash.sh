@@ -40,7 +40,11 @@ set_arguments_to_scope() {
         local tmp_arg=$result
         evaluate "$tmp_arg" $scope_id
         arguments_cache=$arguments_cache$result
-        set_var_in_scope "$param" "$result" $result_kind $this_new_scope_id
+        if [ $result_kind = "Tuple" ]; then
+            set_tuple_in_scope $param "${result_tuple[0]}" "${result_tuple[1]}" $this_new_scope_id
+        else
+            set_var_in_scope "$param" "$result" $result_kind $this_new_scope_id
+        fi
         let counter=counter+1
     done
     result_cache_key="$func_id$arguments_cache"; new_scope_id=$this_new_scope_id
@@ -160,11 +164,6 @@ eval_call() {
         parse_json .value <<< $result; local callee_body=$result
         set_arguments_to_scope $scope_id $callee_num_args "$term" "$callee_body" 1; local this_new_scope_id=$new_scope_id
         evaluate "$callee_body" $this_new_scope_id
-    # elif [ $result_kind == "Tuple" ]; then
-    # :
-    #     # resolve_tuple $scope_id
-    #     # echo
-    #     # echo $resolve_tuple_output
     fi
 }
 
