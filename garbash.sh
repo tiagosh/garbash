@@ -137,47 +137,26 @@ eval_print() {
 
 eval_call() {
     local term=$1; local scope_id=$2;
-    local var_name; local num_args; local callee; local callee_kind; local callee_num_args
+    local term=$1; local scope_id=$2; local num_args; local var_name; local callee; local callee_body; local callee_kind
     parse_json_jj callee <<< $term; callee=$result
     parse_json_jj callee.kind <<< $term; callee_kind=$result
-    parse_json_jj callee.value <<< $term; callee_body=$result
-    parse_json_jj callee.text <<< $term; var_name=$result
     parse_json_jj 'arguments|#' <<< $term; num_args=$result
-    parse_json_jj 'callee.arguments|#' <<< $term; callee_num_args=$result
+    parse_json_jj callee.text <<< $term; var_name=$result
+    evaluate "$callee" $scope_id; callee_body=$result
+    [ -n "$var_name" -a "${scope_id_map[$scope_id]}" != "$var_name" ] && memoize_blacklist[$scope_id]=1
+    local recover_context=0
     case $callee_kind in
-    Function)
-        set_arguments_to_scope $scope_id $num_args "$term" "$callee" 1; local this_new_scope_id=$new_scope_id
-        parse_json_jj value <<< $callee; local callee_body=$result
-        evaluate "$callee_body" $this_new_scope_id
-    ;;
-    Var)
-        [ "${scope_id_map[$scope_id]}" != "$var_name" ] && memoize_blacklist[$scope_id]=1
-        get_var_from_scope $var_name $scope_id; callee=$result;
-        set_arguments_to_scope $scope_id "$num_args" "$term" "$callee" 0; local this_new_scope_id=$new_scope_id
-        scope_id_map[$this_new_scope_id]=$var_name
-        local this_cache_key=$result_cache_key
-        [ -n "$result" ] && return
-        parse_json_jj value <<< $callee; local callee_body=$result
-        evaluate "$callee_body" $this_new_scope_id
-        [ "${memoize_blacklist[$this_new_scope_id]}" = "1" ] && return
-        [ -n "$this_cache_key" ] && result_cache["$this_cache_key"]=$result && result_kind_cache["$this_cache_key"]=$result_kind
-        return
-    ;;
-    Call)
-        evaluate "$callee" $scope_id; local callee_body=$result
-        set_arguments_to_scope $scope_id $num_args "$term" "$callee_body" 1; local this_new_scope_id=$new_scope_id
-        parse_json_jj value <<< $callee_body; local callee_body=$result
-        evaluate "$callee_body" $this_new_scope_id
-    ;;
-    *) runtime_error "Call to invalid Term" ;;
+    Function) recover_context=1 ;;
+    Var) recover_context=0 ;;
+    Call) recover_context=1 ;;
     esac
-    if [ $result_kind == "Function" ]; then
-        local func_id=$(cksum <<< $result)
-        [ ! -v "closure_scopes['$func_id']" ] && runtime_error "No closure scope found"
-        parse_json_jj value <<< $result; local callee_body=$result
-        set_arguments_to_scope $scope_id $callee_num_args "$term" "$callee_body" 1; local this_new_scope_id=$new_scope_id
-        evaluate "$callee_body" $this_new_scope_id
-    fi
+    set_arguments_to_scope $scope_id $num_args "$term" "$callee_body" $recover_context; local this_new_scope_id=$new_scope_id
+    [ -n "$result" ] && return
+    [ -n "$var_name" ] && scope_id_map[$this_new_scope_id]=$var_name && local this_cache_key=$result_cache_key
+    parse_json_jj value <<< $callee_body; callee_body=$result
+    evaluate "$callee_body" $this_new_scope_id
+    [ "${memoize_blacklist[$this_new_scope_id]}" = "1" ] && return
+    [ -n "$this_cache_key" ] && result_cache["$this_cache_key"]=$result && result_kind_cache["$this_cache_key"]=$result_kind
 }
 
 eval_var() {
