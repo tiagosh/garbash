@@ -217,7 +217,38 @@ eval_bool() {
 eval_tuple() {
     local scope_id=$2; local first_term; local second_term
     parse_json_jj first <<< $1; first_term=$result
+    evaluate "$result" $scope_id
+    first_term="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+    if [ $result_kind = "Tuple" ]; then
+        evaluate "${result_tuple[0]}" $scope_id
+        local result_first=$result
+        if [ $result_kind != "Tuple" ]; then
+            result_first="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+        fi
+        evaluate "${result_tuple[1]}" $scope_id
+        local result_second=$result
+        if [ $result_kind != "Tuple" ]; then
+            result_second="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+        fi
+        first_term="{\"kind\":\"Tuple\",\"first\":$result_first,\"second\":$result_second}"
+    fi
     parse_json_jj second <<< $1; second_term=$result
+    evaluate "$result" $scope_id
+    second_term="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+    if [ $result_kind = "Tuple" ]; then
+        evaluate "${result_tuple[0]}" $scope_id
+        local result_first=$result
+        if [ $result_kind != "Tuple" ]; then
+            result_first="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+        fi
+        evaluate "${result_tuple[1]}" $scope_id
+        local result_second=$result
+        if [ $result_kind != "Tuple" ]; then
+            result_second="{\"kind\":\"$result_kind\",\"value\":\"$result\"}"
+        fi
+        second_term="{\"kind\":\"Tuple\",\"first\":$result_first,\"second\":$result_second}"
+    fi
+    result="{\"kind\":\"Tuple\",\"first\":$first_term,\"second\":$second_term}"
     result_tuple[0]=$first_term; result_tuple[1]=$second_term;
     result_kind=Tuple
 }
