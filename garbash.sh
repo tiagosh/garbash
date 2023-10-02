@@ -180,25 +180,6 @@ eval_call() {
     fi
 }
 
-resolve_tuple() {
-    local scope_id=$1; local tuple_first=$2; local tuple_second=$3;
-    local output='{"kind":"Tuple","first":'
-    evaluate "$tuple_first" $scope_id
-    case $result_kind in
-    Int|Bool) output="{\"kind\":\"$result_kind\",\"value\":$result:}" ;;
-    Str) "{\"kind\":\"$result_kind\",\"value\":\"$result\":}" ;;
-    Tuple) resolve_tuple; output="$output$result"
-    esac
-    evaluate "$tuple_second" $scope_id
-    output="$output,\"second\":"
-    case $result_kind in
-    Int|Bool) output="{\"kind\":\"$result_kind\",\"value\":$result:}" ;;
-    Str) "{\"kind\":\"$result_kind\",\"value\":\"$result\":}" ;;
-    Tuple) resolve_tuple; output="$output$result"
-    esac
-    output="}"; resolve_tuple_output=$output
-}
-
 eval_var() {
     parse_json_jj text <<< $1
     local scope_id=$2
