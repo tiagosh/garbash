@@ -147,7 +147,7 @@ eval_call() {
     local recover_context=0
     case $callee_kind in
     Function) recover_context=1 ;;
-    Var) recover_context=0 ;;
+    Var) [ -v "scope_id_map[$this_new_scope_id]" ] && recover_context=0 || recover_context=1 ;;
     Call) recover_context=1 ;;
     esac
     set_arguments_to_scope $scope_id $num_args "$term" "$callee_body" $recover_context; local this_new_scope_id=$new_scope_id
